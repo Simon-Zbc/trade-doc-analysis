@@ -9,6 +9,7 @@
 ### Constants
 
 #### `DOCUMENT_TYPES`
+
 書類種類の定義と抽出対象フィールドを含む辞書。
 
 ```python
@@ -16,15 +17,40 @@
     "invoice": {
         "ja_name": "インボイス（商業送り状）",
         "en_name": "Commercial Invoice",
-        "extract_fields": ["商品名", "輸出者名", "輸入者名", "FOB", "CFR"]
+        "extract_fields": ["輸出者名", "輸入者名", "商品名", "FOB", "CFR", "金額"]
     },
-    # ... other document types
+    "bill_of_lading": {
+        "ja_name": "船荷証券",
+        "en_name": "Bill of Lading (B/L)",
+        "extract_fields": ["輸出者名", "荷受人名", "貨物到着通知先", "船積港", "仕向港", "商品名", "船積日", "ON BOARD表示", "呈示期限", "通数", "B/L発行日", "B/L発行者"]
+    },
+    "air_waybill": {
+        "ja_name": "航空運送状",
+        "en_name": "Air Waybill (AWB)",
+        "extract_fields": ["輸出者名", "荷受人名", "貨物到着通知先", "船積港", "仕向港", "商品名", "船積日", "ON BOARD表示", "呈示期限", "通数", "B/L発行日", "B/L発行者"]
+    },
+    "insurance_policy": {
+        "ja_name": "保険証券",
+        "en_name": "Insurance Policy",
+        "extract_fields": ["保険証券番号", "保険種類", "被保険者", "保険金額", "損害填補範囲", "商品名", "有効期限", "保険会社名"]
+    },
+    "bill_of_exchange": {
+        "ja_name": "為替手形",
+        "en_name": "Bill of Exchange",
+        "extract_fields": ["支払人", "振出人", "手形金額", "満期日"]
+    },
+    "letter_of_credit": {
+        "ja_name": "信用状",
+        "en_name": "Letter of Credit (L/C)",
+        "extract_fields": ["L/C番号", "開設依頼人", "受益者", "L/C期限", "船積期限", "呈示期間", "L/C開設金額", "現在残", "商品", "原産地", "船積地(国名)", "荷揚地(国名)", "要求書類(通数)"]
+    }
 }
 ```
 
 ### Functions
 
 #### `validate_config()`
+
 環境変数の検証を行う。必須の環境変数がすべて設定されていることを確認します。
 
 ```python
@@ -39,13 +65,13 @@ except ValueError as e:
 
 ### Environment Variables
 
-| 変数名 | 説明 | 必須 |
-|-------|------|------|
-| `DOCUMENT_INTELLIGENCE_ENDPOINT` | Document Intelligence のエンドポイントURL | ✅ |
-| `DOCUMENT_INTELLIGENCE_KEY` | Document Intelligence のAPIキー | ✅ |
-| `AZURE_AI_FOUNDRY_ENDPOINT` | Azure AI Foundry のエンドポイントURL | ✅ |
-| `AZURE_AI_FOUNDRY_API_KEY` | Azure AI Foundry のAPIキー | ✅ |
-| `AZURE_AI_FOUNDRY_MODEL` | 使用するGPTモデル (デフォルト: gpt-4-mini) | ❌ |
+| 変数名                           | 説明                                       | 必須 |
+| -------------------------------- | ------------------------------------------ | ---- |
+| `DOCUMENT_INTELLIGENCE_ENDPOINT` | Document Intelligence のエンドポイントURL  | ✅   |
+| `DOCUMENT_INTELLIGENCE_KEY`      | Document Intelligence のAPIキー            | ✅   |
+| `AZURE_AI_FOUNDRY_ENDPOINT`      | Azure AI Foundry のエンドポイントURL       | ✅   |
+| `AZURE_AI_FOUNDRY_API_KEY`       | Azure AI Foundry のAPIキー                 | ✅   |
+| `AZURE_AI_FOUNDRY_MODEL`         | 使用するGPTモデル (デフォルト: gpt-4-mini) | ❌   |
 
 ## Document Analyzer Module (`document_analyzer.py`)
 
@@ -66,10 +92,12 @@ analyzer = DocumentAnalyzer()
 ドキュメントを分析し、テキストとテーブルデータを抽出します。
 
 **Parameters:**
+
 - `file_bytes` (bytes): PDFファイルのバイナリコンテンツ
 - `file_name` (str): ファイル名
 
 **Returns:**
+
 ```python
 {
     "status": "success" | "error",
@@ -124,14 +152,17 @@ analyzer = GPTAnalyzer()
 #### Method: `analyze_document(extracted_text, tables_data)`
 
 2段階の分析を実行します：
+
 1. ドキュメント種類の分類
 2. 分類に基づいた詳細情報の抽出
 
 **Parameters:**
+
 - `extracted_text` (str): Document Intelligence から抽出されたテキスト
 - `tables_data` (list): Document Intelligence から抽出されたテーブルデータ
 
 **Returns:**
+
 ```python
 {
     "status": "success" | "error",
@@ -170,7 +201,7 @@ if doc_result["status"] == "success":
         doc_result["extracted_text"],
         doc_result["tables"]
     )
-    
+
     if gpt_result["status"] == "success":
         print(f"Document Type: {gpt_result['document_type']['ja_name']}")
         print(f"Extracted Fields: {gpt_result['detailed_information']['fields']}")
@@ -192,15 +223,19 @@ st.session_state.gpt_analyzer       # GPTAnalyzer インスタンス
 ### Main Functions
 
 #### `initialize_analyzers()`
+
 分析エンジンを初期化し、設定を検証します。
 
 #### `analyze_document()`
+
 アップロードされたドキュメントを分析します。
 
 #### `clear_analysis()`
+
 アップロードされたファイルと分析結果をリセットします。
 
 #### `display_results()`
+
 分析結果を画面に表示します。
 
 ## Usage Examples
@@ -228,12 +263,12 @@ if doc_result["status"] == "success":
         doc_result["extracted_text"],
         doc_result["tables"]
     )
-    
+
     # Print results
     if gpt_result["status"] == "success":
         doc_type = gpt_result["document_type"]["ja_name"]
         fields = gpt_result["detailed_information"]["fields"]
-        
+
         print(f"Document Type: {doc_type}")
         for field, value in fields.items():
             print(f"  {field}: {value}")
@@ -256,16 +291,16 @@ results = []
 
 for pdf_file in pdf_dir.glob("*.pdf"):
     print(f"Processing {pdf_file.name}...")
-    
+
     with open(pdf_file, "rb") as f:
         doc_result = doc_analyzer.analyze_document(f.read(), pdf_file.name)
-    
+
     if doc_result["status"] == "success":
         gpt_result = gpt_analyzer.analyze_document(
             doc_result["extracted_text"],
             doc_result["tables"]
         )
-        
+
         results.append({
             "file": pdf_file.name,
             "result": gpt_result
@@ -287,6 +322,7 @@ ImportError: No module named 'azure.ai.documentintelligence'
 ```
 
 **Solution:**
+
 ```bash
 pip install azure-ai-documentintelligence --upgrade
 ```
@@ -307,6 +343,7 @@ AuthenticationError: Invalid credentials
 ```
 
 **Solution:**
+
 1. Azure Portal で認証情報を確認してください
 2. `.env` ファイルが正しく設定されているか確認してください
 3. APIキーの有効期限を確認してください
@@ -318,6 +355,7 @@ RequestException: 404 Not Found
 ```
 
 **Solution:**
+
 1. エンドポイントURLが正しい形式であることを確認してください
 2. リージョンが正しいことを確認してください
 3. Azure リソースが作成されていることを確認してください
@@ -361,6 +399,7 @@ logger.error("Processing failed")
 ```
 
 ログレベルは `.env` で設定できます：
+
 ```
 LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR, CRITICAL
 ```

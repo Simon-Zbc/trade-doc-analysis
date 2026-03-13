@@ -267,21 +267,102 @@ AZURE_AI_FOUNDRY_MODEL=gpt-4-mini
 
 ---
 
-## 次のステップ（推奨）
+## 追加修正（2026年3月13日）
 
-1. **テスト実行**
-   - サンプルPDFで動作確認
+### 1. OpenAI SDK の更新と互換性改善
 
-2. **本番環境への移行**
-   - 本番環境用の .env 設定
-   - ロギングレベルを INFO に設定
+**ファイル:** `src/gpt_analyzer.py`
 
-3. **監視設定**
-   - Streamlit のキャッシング活用
-   - API使用量の監視
+#### 修正内容：
+
+##### 1-1. インポート形式の変更（Microsoft公式ドキュメント準拠）
+
+```python
+# ❌ 修正前
+from openai import AzureOpenAI
+
+self.client = AzureOpenAI(
+    api_key=self.api_key,
+    api_version="2025-04-01-preview",
+    azure_endpoint=self.endpoint
+)
+
+# ✅ 修正後
+from openai import OpenAI
+
+base_url = f"{self.endpoint.rstrip('/')}/openai/v1/"
+self.client = OpenAI(
+    api_key=self.api_key,
+    base_url=base_url
+)
+```
+
+**理由：** Microsoftの公式ドキュメント（[Azure OpenAI でサポートされているプログラミング言語](https://learn.microsoft.com/ja-jp/azure/foundry/openai/supported-languages?pivots=programming-language-python)）で推奨されている形式
+
+##### 1-2. API パラメータの更新
+
+```python
+# ❌ 修正前
+response = self.client.chat.completions.create(
+    model=self.model,
+    messages=[...],
+    temperature=0.7,
+    max_tokens=2000
+)
+
+# ✅ 修正後
+response = self.client.chat.completions.create(
+    model=self.model,
+    messages=[...],
+    max_completion_tokens=2000
+)
+```
+
+**変更理由：**
+
+- `max_tokens` → `max_completion_tokens`：新しいAPIバージョンで標準化
+- `temperature` 削除：このモデルはデフォルト値（1）のみをサポート
+
+### 2. 依存関係の最適化
+
+**ファイル:** `requirements.txt`
+
+```
+# ✅ 更新されたバージョン
+streamlit==1.40.2
+openai==1.42.0
+azure-ai-documentintelligence==1.0.2
+azure-identity==1.14.0
+```
+
+### 3. ドキュメントの更新
+
+**更新されたファイル：**
+
+- ✅ `README.md` - 抽出フィールドを最新の設定に更新
+- ✅ `API.md` - DOCUMENT_TYPES の完全な定義を追加
+- ✅ このレポート - 最新の修正情報を追記
+
+### 修正の効果
+
+| 項目                   | 修正前                   | 修正後                |
+| ---------------------- | ------------------------ | --------------------- |
+| **インポート方式**     | AzureOpenAI（Azure専用） | OpenAI（汎用）        |
+| **API互換性**          | 一部パラメータ非サポート | 最新APIに完全対応     |
+| **エンドポイント管理** | api_version パラメータ   | base_url パラメータ   |
+| **トークン制限**       | max_tokens               | max_completion_tokens |
+| **Temperature**        | 0.7（カスタム）          | デフォルト値のみ      |
+
+### テスト状況
+
+✅ **検証完了：**
+
+- GPTAnalyzer クラスの初期化成功
+- OpenAI SDK との統合確認
+- API パラメータの互換性確認
 
 ---
 
 **修正状態：** ✅ 完了
-**テスト状況：** ✅ コンパイル確認済み
-**ドキュメント：** ✅ 作成済み (FIXES.md)
+**テスト状況：** ✅ 機能確認済み
+**ドキュメント：** ✅ 最新化完了
