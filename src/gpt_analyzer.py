@@ -220,14 +220,30 @@ JSON形式で以下の構造で返してください：
 
             logger.debug(f"Extraction response: {response}")
 
-            # Parse response - handle potential markdown formatting
+            # Parse response - handle potential markdown formatting more robustly
             response_text = response.strip()
+
+            # Remove markdown code blocks
             if response_text.startswith('```json'):
-                response_text = response_text[7:]
-            if response_text.startswith('```'):
-                response_text = response_text[3:]
+                response_text = response_text[7:].strip()
+            elif response_text.startswith('```'):
+                response_text = response_text[3:].strip()
+
             if response_text.endswith('```'):
-                response_text = response_text[:-3]
+                response_text = response_text[:-3].strip()
+
+            # Remove any remaining whitespace
+            response_text = response_text.strip()
+
+            # Check if response is empty
+            if not response_text:
+                logger.error("Empty response from GPT API")
+                return {
+                    "fields": {},
+                    "additional_notes": "No information could be extracted"
+                }
+
+            logger.debug(f"Cleaned response text: {response_text[:200]}...")
 
             result = json.loads(response_text)
             logger.info(f"✅ Information extraction completed")
@@ -236,6 +252,13 @@ JSON形式で以下の構造で返してください：
 
             return result
 
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Error parsing JSON: {str(e)}")
+            logger.debug(f"Failed to parse: {response_text[:500]}")
+            return {
+                "fields": {},
+                "additional_notes": "Failed to parse extracted information"
+            }
         except Exception as e:
             logger.error(f"❌ Error extracting detailed info: {str(e)}")
             logger.debug(
@@ -290,3 +313,144 @@ JSON形式で以下の構造で返してください：
             logger.debug(
                 f"Exception details: {type(e).__name__}", exc_info=True)
             raise
+
+    def compare_documents(self, doc1_analysis: Dict[str, Any], doc2_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Compare two document analyses for discrepancies
+
+        Args:
+            doc1_analysis: First document analysis result
+            doc2_analysis: Second document analysis result
+
+        Returns:
+            Dictionary containing comparison results with matching and discrepant items
+        """
+        try:
+            logger.info("🔍 Comparing two documents for discrepancies...")
+
+            # Extract document information
+            doc1_type = doc1_analysis.get(
+                "document_type", {}).get("ja_name", "Unknown")
+            doc1_fields = doc1_analysis.get(
+                "detailed_information", {}).get("fields", {})
+
+            doc2_type = doc2_analysis.get(
+                "document_type", {}).get("ja_name", "Unknown")
+            doc2_fields = doc2_analysis.get(
+                "detailed_information", {}).get("fields", {})
+
+            # Prepare comparison prompt
+            prompt = f"""以下の2つの貿易書類の分析結果を比較してください。
+同じ意味の項目であっても、フィールド名が異なる可能性があります。書類の内容を理解した上で比較してください。
+
+**書類1（{doc1_type}）の抽出結果:**
+```json
+{json.dumps(doc1_fields, ensure_ascii=False, indent=2)}
+```
+
+**書類2（{doc2_type}）の抽出結果:**
+```json
+{json.dumps(doc2_fields, ensure_ascii=False, indent=2)}
+```
+
+以下のJSON形式で、ディスクレプスキー（相違点分析）結果を返してください：
+
+{{
+    "matching_items": [
+        {{
+            "field1": "フィールド名",
+            "field2": "フィールド名",
+            "value1": "値",
+            "value2": "値",
+            "status": "identical" または "semantically_equivalent"
+        }}
+    ],
+    "discrepant_items": [
+        {{
+            "field1": "フィールド名",
+            "field2": "フィールド名",
+            "value1": "値",
+            "value2": "値",
+            "reason": "相違の理由"
+        }}
+    ],
+    "unique_to_doc1": [
+        {{
+            "field": "フィールド名",
+            "value": "値"
+        }}
+    ],
+    "unique_to_doc2": [
+        {{
+            "field": "フィールド名",
+            "value": "値"
+        }}
+    ],
+    "summary": "全体的な相違点の要約と注釈"
+}}
+
+有効なJSON形式のみを返してください。マークダウンのコードブロックや説明は含めないでください。
+"""
+
+            # Log the prompt for debugging
+            logger.info("📝 Comparison prompt:")
+            logger.info(
+                f"Document 1 type: {doc1_type}, Fields: {len(doc1_fields)}")
+            logger.info(
+                f"Document 2 type: {doc2_type}, Fields: {len(doc2_fields)}")
+            logger.debug(f"Full prompt length: {len(prompt)} characters")
+            logger.debug(f"Prompt content:\n{prompt[:500]}...")
+
+            response = self._call_gpt(prompt)
+
+            logger.debug(f"Comparison response: {response}")
+
+            # Parse response - handle potential markdown formatting more robustly
+            response_text = response.strip()
+
+            # Remove markdown code blocks
+            if response_text.startswith('```json'):
+                response_text = response_text[7:].strip()
+            elif response_text.startswith('```'):
+                response_text = response_text[3:].strip()
+
+            if response_text.endswith('```'):
+                response_text = response_text[:-3].strip()
+
+            # Remove any remaining whitespace
+            response_text = response_text.strip()
+
+            # Check if response is empty
+            if not response_text:
+                logger.error("Empty response from GPT API for comparison")
+                return {
+                    "status": "error",
+                    "error_message": "No comparison result received from GPT"
+                }
+
+            logger.debug(
+                f"Cleaned comparison response: {response_text[:200]}...")
+
+            result = json.loads(response_text)
+            logger.info(f"✅ Document comparison completed")
+
+            return {
+                "status": "success",
+                "comparison_result": result
+            }
+
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Error parsing comparison JSON: {str(e)}")
+            logger.debug(f"Failed to parse: {response_text[:500]}")
+            return {
+                "status": "error",
+                "error_message": f"Failed to parse comparison result: {str(e)}"
+            }
+        except Exception as e:
+            logger.error(f"❌ Error comparing documents: {str(e)}")
+            logger.debug(
+                f"Exception details: {type(e).__name__}", exc_info=True)
+            return {
+                "status": "error",
+                "error_message": f"Comparison failed: {str(e)}"
+            }
