@@ -69,9 +69,9 @@ except ValueError as e:
 | -------------------------------- | ------------------------------------------ | ---- |
 | `DOCUMENT_INTELLIGENCE_ENDPOINT` | Document Intelligence のエンドポイントURL  | ✅   |
 | `DOCUMENT_INTELLIGENCE_KEY`      | Document Intelligence のAPIキー            | ✅   |
-| `AZURE_AI_FOUNDRY_ENDPOINT`      | Azure AI Foundry のエンドポイントURL       | ✅   |
-| `AZURE_AI_FOUNDRY_API_KEY`       | Azure AI Foundry のAPIキー                 | ✅   |
-| `AZURE_AI_FOUNDRY_MODEL`         | 使用するGPTモデル (デフォルト: gpt-4-mini) | ❌   |
+| `AZURE_OPENAI_ENDPOINT`          | Azure OpenAI Service のエンドポイントURL   | ✅   |
+| `AZURE_OPENAI_API_KEY`           | Azure OpenAI Service のAPIキー             | ✅   |
+| `AZURE_OPENAI_MODEL_NAME`        | 使用するGPTモデル (デフォルト: gpt-5-mini) | ❌   |
 
 ## Document Analyzer Module (`document_analyzer.py`)
 
@@ -139,7 +139,7 @@ else:
 
 ### Class: `GPTAnalyzer`
 
-Azure AI Foundry の GPT モデルを使用して、ドキュメント分類と詳細情報抽出を行います。
+Azure OpenAI Service の GPT-5-mini モデルを使用して、ドキュメント分類、詳細情報抽出、および Letter of Credit ベースのディスクレパンシーチェックを行います。
 
 #### Constructor
 
@@ -149,7 +149,7 @@ from gpt_analyzer import GPTAnalyzer
 analyzer = GPTAnalyzer()
 ```
 
-#### Method: `analyze_document(extracted_text, tables_data)`
+#### Method: `analyze_document(extracted_text, tables_data, is_lc=False)`
 
 2段階の分析を実行します：
 
@@ -160,6 +160,7 @@ analyzer = GPTAnalyzer()
 
 - `extracted_text` (str): Document Intelligence から抽出されたテキスト
 - `tables_data` (list): Document Intelligence から抽出されたテーブルデータ
+- `is_lc` (bool): True の場合、L/C であることを確認，False の場合，通常の分類・抽出を実施
 
 **Returns:**
 
@@ -170,7 +171,7 @@ analyzer = GPTAnalyzer()
         "ja_name": str,  # "インボイス（商業送り状）"
         "en_name": str   # "Commercial Invoice"
     },
-    "document_class": str,  # "invoice", "bill_of_lading", etc.
+    "document_class": str,  # "invoice", "bill_of_lading", "letter_of_credit", etc.
     "detailed_information": {
         "fields": {
             "field_name": "extracted_value",
@@ -178,6 +179,70 @@ analyzer = GPTAnalyzer()
         },
         "additional_notes": str
     },
+    "error_message": str  # status="error" の場合のみ
+}
+```
+
+#### Method: `check_discrepancies_with_lc(lc_analysis, other_files_analyses)`
+
+Letter of Credit を基準に、関連書類のディスクレパンシーを 10 項目にわたって詳細チェックします。
+
+**Parameters:**
+
+- `lc_analysis` (dict): L/C の分析結果（`analyze_document()` の返り値）
+- `other_files_analyses` (dict): その他の書類の分析結果の辞書 `{document_type: analysis_result}`
+
+  例:
+
+  ```python
+  {
+      "invoice": {analysis_result},
+      "bill_of_lading": {analysis_result},
+      ...
+  }
+  ```
+
+**Returns:**
+
+```python
+{
+    "status": "success" | "error",
+    "checks": {
+        "shipment_date_verification": {
+            "status": "OK" | "NG" | "Warning",
+            "detail": "詳細な検証結果",
+            "bl_shipment_date": "2024-03-15",
+            "lc_shipment_deadline": "2024-03-31"
+        },
+        "lc_expiration_check": {...},
+        "presentation_period_check": {...},
+        "required_documents_check": {...},
+        "price_terms_check": {...},
+        "ports_verification": {...},
+        "goods_description_check": {...},
+        "settlement_method_check": {...},
+        "fees_and_conditions_check": {...},
+        "usance_period_check": {...}
+    },
+    "summary": {
+        "total_items": 10,
+        "ok_count": int,
+        "ng_count": int,
+        "warning_count": int,
+        "overall_status": "OK" | "NG" | "Warning"
+    },
+    "critical_issues": [
+        "重大な問題1",
+        "重大な問題2"
+    ],
+    "warnings": [
+        "警告1",
+        "警告2"
+    ],
+    "recommendations": [
+        "推奨事項1",
+        "推奨事項2"
+    ],
     "error_message": str  # status="error" の場合のみ
 }
 ```
@@ -214,10 +279,20 @@ if doc_result["status"] == "success":
 アプリはStreamlit session stateで以下の値を管理します：
 
 ```python
-st.session_state.uploaded_file      # アップロードされたファイル
-st.session_state.analysis_result    # 分析結果
-st.session_state.document_analyzer  # DocumentAnalyzer インスタンス
-st.session_state.gpt_analyzer       # GPTAnalyzer インスタンス
+# L/C (基準ドキュメント)
+st.session_state.uploaded_lc              # アップロードされた Letter of Credit ファイル
+st.session_state.lc_analysis_result       # L/C の分析結果
+
+# 複数の関連書類
+st.session_state.uploaded_other_files     # アップロードされた関連書類（複数）
+st.session_state.other_files_analysis_results  # 各関連書類の分析結果 {doc_type: analysis_result}
+
+# ディスクレチェック
+st.session_state.discrepancy_check_result # 10 項目のディスクレチェック結果
+
+# 分析エンジン
+st.session_state.document_analyzer        # DocumentAnalyzer インスタンス
+st.session_state.gpt_analyzer             # GPTAnalyzer インスタンス
 ```
 
 ### Main Functions
@@ -240,7 +315,7 @@ st.session_state.gpt_analyzer       # GPTAnalyzer インスタンス
 
 ## Usage Examples
 
-### Example 1: Simple Document Analysis
+### Example 1: L/C Discrepancy Checking
 
 ```python
 from document_analyzer import DocumentAnalyzer
@@ -250,31 +325,59 @@ from gpt_analyzer import GPTAnalyzer
 doc_analyzer = DocumentAnalyzer()
 gpt_analyzer = GPTAnalyzer()
 
-# Read document
-with open("commercial_invoice.pdf", "rb") as f:
-    file_bytes = f.read()
+# Read L/C document
+with open("letter_of_credit.pdf", "rb") as f:
+    lc_file_bytes = f.read()
 
-# Analyze with Document Intelligence
-doc_result = doc_analyzer.analyze_document(file_bytes, "invoice.pdf")
+# Analyze L/C
+doc_result = doc_analyzer.analyze_document(lc_file_bytes, "letter_of_credit.pdf")
 
 if doc_result["status"] == "success":
-    # Analyze with GPT
-    gpt_result = gpt_analyzer.analyze_document(
+    # Classify and extract L/C information
+    lc_analysis = gpt_analyzer.analyze_document(
         doc_result["extracted_text"],
-        doc_result["tables"]
+        doc_result["tables"],
+        is_lc=True
     )
 
-    # Print results
-    if gpt_result["status"] == "success":
-        doc_type = gpt_result["document_type"]["ja_name"]
-        fields = gpt_result["detailed_information"]["fields"]
+    if lc_analysis["status"] == "success" and lc_analysis["document_class"] == "letter_of_credit":
+        # Process supporting documents
+        other_files_analyses = {}
 
-        print(f"Document Type: {doc_type}")
-        for field, value in fields.items():
-            print(f"  {field}: {value}")
+        for doc_path in ["invoice.pdf", "bill_of_lading.pdf"]:
+            with open(doc_path, "rb") as f:
+                doc_result = doc_analyzer.analyze_document(f.read(), doc_path)
+
+            if doc_result["status"] == "success":
+                analysis = gpt_analyzer.analyze_document(
+                    doc_result["extracted_text"],
+                    doc_result["tables"]
+                )
+                if analysis["status"] == "success":
+                    other_files_analyses[analysis["document_class"]] = analysis
+
+        # Run discrepancy check
+        discrepancy_result = gpt_analyzer.check_discrepancies_with_lc(
+            lc_analysis,
+            other_files_analyses
+        )
+
+        # Display results
+        print(f"L/C Number: {lc_analysis['detailed_information']['fields'].get('L/C番号')}")
+        print(f"\nDiscrepancy Check Result: {discrepancy_result['summary']['overall_status']}")
+        print(f"OK: {discrepancy_result['summary']['ok_count']}/10")
+        print(f"NG: {discrepancy_result['summary']['ng_count']}/10")
+        print(f"Warning: {discrepancy_result['summary']['warning_count']}/10")
+
+        if discrepancy_result['critical_issues']:
+            print(f"\nCritical Issues:")
+            for issue in discrepancy_result['critical_issues']:
+                print(f"  - {issue}")
+    else:
+        print("Error: Uploaded file is not a Letter of Credit")
 ```
 
-### Example 2: Batch Processing
+### Example 2: Batch L/C Processing
 
 ```python
 from pathlib import Path
@@ -285,29 +388,56 @@ import json
 doc_analyzer = DocumentAnalyzer()
 gpt_analyzer = GPTAnalyzer()
 
-# Process all PDFs in a directory
-pdf_dir = Path("./documents")
+# Process multiple L/C batches
+lc_dir = Path("./lc_documents")
 results = []
 
-for pdf_file in pdf_dir.glob("*.pdf"):
-    print(f"Processing {pdf_file.name}...")
+for lc_file in lc_dir.glob("lc_*.pdf"):
+    print(f"Processing {lc_file.name}...")
 
-    with open(pdf_file, "rb") as f:
-        doc_result = doc_analyzer.analyze_document(f.read(), pdf_file.name)
+    # Analyze L/C
+    with open(lc_file, "rb") as f:
+        result = doc_analyzer.analyze_document(f.read(), lc_file.name)
 
-    if doc_result["status"] == "success":
-        gpt_result = gpt_analyzer.analyze_document(
-            doc_result["extracted_text"],
-            doc_result["tables"]
+    if result["status"] == "success":
+        lc_analysis = gpt_analyzer.analyze_document(
+            result["extracted_text"],
+            result["tables"],
+            is_lc=True
         )
 
-        results.append({
-            "file": pdf_file.name,
-            "result": gpt_result
-        })
+        # Identify and process related documents
+        doc_name = lc_file.stem.replace("lc_", "")
+        related_docs = list(lc_dir.glob(f"*{doc_name}*.pdf"))
 
-# Save results
-with open("analysis_results.json", "w", encoding="utf-8") as f:
+        other_files_analyses = {}
+        for doc_path in related_docs:
+            if "lc" not in doc_path.name:
+                with open(doc_path, "rb") as f:
+                    doc_result = doc_analyzer.analyze_document(f.read(), doc_path.name)
+                if doc_result["status"] == "success":
+                    analysis = gpt_analyzer.analyze_document(
+                        doc_result["extracted_text"],
+                        doc_result["tables"]
+                    )
+                    if analysis["status"] == "success":
+                        other_files_analyses[analysis["document_class"]] = analysis
+
+        # Run discrepancy check
+        if lc_analysis["status"] == "success":
+            discrepancy_result = gpt_analyzer.check_discrepancies_with_lc(
+                lc_analysis,
+                other_files_analyses
+            )
+
+            results.append({
+                "lc_file": lc_file.name,
+                "lc_number": lc_analysis['detailed_information']['fields'].get('L/C番号'),
+                "discrepancy_check": discrepancy_result['summary']
+            })
+
+# Save batch results
+with open("lc_batch_results.json", "w", encoding="utf-8") as f:
     json.dump(results, f, ensure_ascii=False, indent=2)
 ```
 
@@ -367,10 +497,24 @@ RequestException: 404 Not Found
 - 推奨: ファイルサイズ 10MB 以下
 - 最大: 2000 ページ
 
+### Processing Time
+
+- **Document Intelligence (OCR)**: 5-15 秒/ドキュメント
+- **GPT L/C 分類**: ~5 秒 + 1 秒遅延
+- **GPT 各書類抽出**: ~5 秒 + 1 秒遅延（複数ドキュメント数分）
+- **GPT ディスクレチェック**: ~10 秒 + 1 秒遅延
+- **Total**: 30-60 秒（L/C + 2-3 関連書類の場合）
+
 ### Text Length Limits
 
 - Document Intelligence: 無制限
-- GPT API: 4096 トークン以下 (約3000-4000文字)
+- GPT API: 4096 トークン以下 (約3000-4000文字) per API call
+
+### API Rate Limiting
+
+- 各 GPT API 呼び出し前に 1 秒の遅延を実装
+- 合計 4 回の遅延: L/C 分類、L/C 抽出、関連書類分析、ディスクレチェック
+- 複数書類の場合、各文書ごとに平均 ~1-2 秒の追加遅延
 
 ### Optimization Tips
 
@@ -379,12 +523,17 @@ RequestException: 404 Not Found
    - テキストを事前処理して短縮
 
 2. **複数ドキュメント処理:**
-   - 非同期処理を使用
+   - 3-4 つのドキュメント以上の場合は、非同期処理を検討
    - バッチ処理でAPI呼び出しを最適化
 
 3. **費用削減:**
    - 不要なテーブル抽出を無効化
-   - キャッシング機構を実装
+   - キャッシング機構で同一ドキュメント再分析を防止
+   - トークン使用量を監視（GPT API）
+
+4. **L/C チェック最適化:**
+   - 主要 10 項目のみに絞った効率的なプロンプト использование
+   - 不要な詳細抽出をスキップ
 
 ## Logging
 

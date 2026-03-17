@@ -24,16 +24,16 @@ st.set_page_config(
 )
 
 # Initialize session state
-if "uploaded_file_1" not in st.session_state:
-    st.session_state.uploaded_file_1 = None
-if "uploaded_file_2" not in st.session_state:
-    st.session_state.uploaded_file_2 = None
-if "analysis_result_1" not in st.session_state:
-    st.session_state.analysis_result_1 = None
-if "analysis_result_2" not in st.session_state:
-    st.session_state.analysis_result_2 = None
-if "comparison_result" not in st.session_state:
-    st.session_state.comparison_result = None
+if "uploaded_lc" not in st.session_state:
+    st.session_state.uploaded_lc = None
+if "uploaded_other_files" not in st.session_state:
+    st.session_state.uploaded_other_files = []
+if "lc_analysis_result" not in st.session_state:
+    st.session_state.lc_analysis_result = None
+if "other_files_analysis_results" not in st.session_state:
+    st.session_state.other_files_analysis_results = {}
+if "discrepancy_check_result" not in st.session_state:
+    st.session_state.discrepancy_check_result = None
 if "document_analyzer" not in st.session_state:
     st.session_state.document_analyzer = None
 if "gpt_analyzer" not in st.session_state:
@@ -56,15 +56,15 @@ def initialize_analyzers():
 
 def clear_analysis():
     """Clear uploaded files and analysis results"""
-    st.session_state.uploaded_file_1 = None
-    st.session_state.uploaded_file_2 = None
-    st.session_state.analysis_result_1 = None
-    st.session_state.analysis_result_2 = None
-    st.session_state.comparison_result = None
+    st.session_state.uploaded_lc = None
+    st.session_state.uploaded_other_files = []
+    st.session_state.lc_analysis_result = None
+    st.session_state.other_files_analysis_results = {}
+    st.session_state.discrepancy_check_result = None
     st.rerun()
 
 
-def analyze_single_document(file, is_doc_1=True):
+def analyze_single_document(file, is_lc=False):
     """Analyze a single document"""
     try:
         # Read file content
@@ -98,255 +98,304 @@ def analyze_single_document(file, is_doc_1=True):
 
 
 def analyze_documents():
-    """Analyze both uploaded documents"""
-    import time
+    """
+    Analyze L/C and other documents, then check discrepancies
 
-    if st.session_state.uploaded_file_1 is None or st.session_state.uploaded_file_2 is None:
-        st.warning("⚠️ Please upload both files first")
+    Flow:
+    1. Analyze L/C file (must be Letter of Credit)
+    2. If not L/C, stop with error
+    3. Analyze other files (Invoice, B/L, AWB, etc.)
+    4. Run discrepancy check with L/C as reference
+    """
+    # import time
+
+    # Validate inputs
+    if st.session_state.uploaded_lc is None:
+        st.error("❌ Please upload Letter of Credit (L/C) file first")
         return
 
-    # Initialize comparison result
-    st.session_state.comparison_result = None
+    if len(st.session_state.uploaded_other_files) == 0:
+        st.error("❌ Please upload at least one other document (Invoice, B/L, etc.)")
+        return
+
+    # Initialize results
+    st.session_state.lc_analysis_result = None
+    st.session_state.other_files_analysis_results = {}
+    st.session_state.discrepancy_check_result = None
 
     with st.spinner("🔄 Analyzing documents..."):
-        # Analyze first document
-        st.info("📋 Analyzing Document 1...")
-        result_1 = analyze_single_document(
-            st.session_state.uploaded_file_1, is_doc_1=True)
+        # ===== STEP 1: Analyze L/C file =====
+        st.info("📋 Step 1: Analyzing Letter of Credit...")
+        lc_result = analyze_single_document(
+            st.session_state.uploaded_lc, is_lc=True)
 
-        if result_1["status"] == "error":
-            st.error(
-                f"❌ Document 1 analysis failed: {result_1['error_message']}")
+        if lc_result["status"] == "error":
+            st.error(f"❌ L/C analysis failed: {lc_result['error_message']}")
             return
 
-        # Analyze second document
-        st.info("📋 Analyzing Document 2...")
-        result_2 = analyze_single_document(
-            st.session_state.uploaded_file_2, is_doc_1=False)
-
-        if result_2["status"] == "error":
+        # Verify it's Letter of Credit
+        lc_doc_class = lc_result.get("document_class", "").lower()
+        if lc_doc_class != "letter_of_credit":
             st.error(
-                f"❌ Document 2 analysis failed: {result_2['error_message']}")
+                f"❌ ERROR: Uploaded L/C file is not a Letter of Credit. Detected as: {lc_result.get('document_type', {}).get('ja_name', 'Unknown')}")
+            logger.error(f"Expected letter_of_credit, got {lc_doc_class}")
             return
 
-        # Store results
-        st.session_state.analysis_result_1 = result_1
-        st.session_state.analysis_result_2 = result_2
+        st.session_state.lc_analysis_result = lc_result
+        st.success(
+            f"✅ L/C Analysis completed: {lc_result['document_type']['ja_name']}")
+        logger.info(
+            f"✅ L/C verified as {lc_result['document_type']['ja_name']}")
 
-        logger.info("✅ Both documents analyzed successfully")
+        # ===== STEP 2: Analyze other documents =====
+        st.info("📋 Step 2: Analyzing other documents...")
+        for idx, file in enumerate(st.session_state.uploaded_other_files, 1):
+            st.info(
+                f"   Analyzing document {idx}/{len(st.session_state.uploaded_other_files)}: {file.name}")
 
-        # Add delay to ensure Document 2 analysis is fully processed
-        logger.info("⏳ Waiting 1 second before comparison...")
-        time.sleep(1)
+            other_result = analyze_single_document(file, is_lc=False)
 
-        # Compare documents
-        st.info("🔍 Comparing documents for discrepancies...")
-        comparison = st.session_state.gpt_analyzer.compare_documents(
-            result_1, result_2)
+            if other_result["status"] == "error":
+                st.warning(
+                    f"⚠️ Document {idx} ({file.name}) analysis failed: {other_result['error_message']}")
+                continue
 
-        if comparison["status"] == "error":
-            st.error(f"❌ Comparison failed: {comparison['error_message']}")
-            logger.error(f"Comparison error: {comparison['error_message']}")
+            doc_class = other_result.get("document_class", "").lower()
+            st.session_state.other_files_analysis_results[doc_class] = other_result
+            logger.info(
+                f"✅ Document {idx} analyzed as: {other_result['document_type']['ja_name']}")
+
+        if len(st.session_state.other_files_analysis_results) == 0:
+            st.error("❌ No other documents could be analyzed successfully")
+            return
+
+        st.success(
+            f"✅ Other documents analysis completed: {len(st.session_state.other_files_analysis_results)} documents")
+        logger.info(
+            f"✅ Completed analysis of {len(st.session_state.other_files_analysis_results)} other documents")
+
+        # ===== STEP 3: Run discrepancy check =====
+        # logger.info("⏳ Waiting 1 second before discrepancy check...")
+        # time.sleep(1)
+
+        st.info("🔍 Step 3: Running discrepancy check...")
+        discrepancy_result = st.session_state.gpt_analyzer.check_discrepancies_with_lc(
+            st.session_state.lc_analysis_result,
+            st.session_state.other_files_analysis_results
+        )
+
+        if discrepancy_result["status"] == "error":
+            st.error(
+                f"❌ Discrepancy check failed: {discrepancy_result['error_message']}")
+            logger.error(
+                f"Discrepancy check error: {discrepancy_result['error_message']}")
         else:
-            st.session_state.comparison_result = comparison["comparison_result"]
-            st.success("✅ Analysis and comparison completed successfully!")
-            logger.info("✅ Comparison completed successfully")
+            st.session_state.discrepancy_check_result = discrepancy_result["discrepancy_result"]
+            st.success(
+                "✅ Analysis and discrepancy check completed successfully!")
+            logger.info("✅ Discrepancy check completed successfully")
 
         st.rerun()
 
 
-def display_comparison_results():
-    """Display side-by-side comparison results"""
-    if st.session_state.analysis_result_1 is None or st.session_state.analysis_result_2 is None:
+def display_discrepancy_results():
+    """Display discrepancy check results"""
+    if st.session_state.lc_analysis_result is None:
         return
 
-    result_1 = st.session_state.analysis_result_1
-    result_2 = st.session_state.analysis_result_2
+    lc_result = st.session_state.lc_analysis_result
+    other_results = st.session_state.other_files_analysis_results
 
-    # Document type header
+    # ===== L/C Information =====
     st.markdown("---")
-    st.subheader("📑 Document Types")
+    st.subheader("📑 Letter of Credit Information")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write(f"**Document 1:**")
-        st.write(f"  Japanese: {result_1['document_type']['ja_name']}")
-        st.write(f"  English: {result_1['document_type']['en_name']}")
-    with col2:
-        st.write(f"**Document 2:**")
-        st.write(f"  Japanese: {result_2['document_type']['ja_name']}")
-        st.write(f"  English: {result_2['document_type']['en_name']}")
+    st.write(
+        f"**Document Type:** {lc_result['document_type']['ja_name']} ({lc_result['document_type']['en_name']})")
 
-    # Extracted information side-by-side
-    st.markdown("---")
-    st.subheader("📊 Extracted Information (Side-by-Side)")
+    lc_fields = lc_result.get("detailed_information", {}).get("fields", {})
+    if lc_fields:
+        col1, col2 = st.columns(2)
+        fields_list = list(lc_fields.items())
+        mid_point = len(fields_list) // 2
 
-    col1, col2 = st.columns(2)
-
-    # Document 1 fields
-    with col1:
-        st.write("**Document 1 - Extracted Fields:**")
-        fields_1 = result_1.get("detailed_information", {}).get("fields", {})
-        if fields_1:
-            for field_name, field_value in fields_1.items():
+        with col1:
+            for field_name, field_value in fields_list[:mid_point]:
                 st.text_input(
                     label=field_name,
                     value=str(field_value),
                     disabled=True,
-                    key=f"doc1_field_{field_name}"
+                    key=f"lc_field_{field_name}"
                 )
-        else:
-            st.warning("⚠️ No fields extracted from Document 1")
-
-    # Document 2 fields
-    with col2:
-        st.write("**Document 2 - Extracted Fields:**")
-        fields_2 = result_2.get("detailed_information", {}).get("fields", {})
-        if fields_2:
-            for field_name, field_value in fields_2.items():
+        with col2:
+            for field_name, field_value in fields_list[mid_point:]:
                 st.text_input(
                     label=field_name,
                     value=str(field_value),
                     disabled=True,
-                    key=f"doc2_field_{field_name}"
+                    key=f"lc_field_{field_name}"
                 )
-        else:
-            st.warning("⚠️ No fields extracted from Document 2")
 
-    # Notes side-by-side
+    # ===== Other Documents Information =====
     st.markdown("---")
-    st.subheader("📝 Summary Notes (Side-by-Side)")
+    st.subheader("📊 Other Documents Information")
 
-    col1, col2 = st.columns(2)
+    if other_results:
+        tabs = st.tabs(
+            [f"📄 {result['document_type']['ja_name']}" for result in other_results.values()])
 
-    with col1:
-        notes_1 = result_1.get("detailed_information", {}).get(
-            "additional_notes", "No notes")
-        st.info(f"**Document 1 Notes:**\n\n{notes_1}")
+        for tab, (doc_class, result) in zip(tabs, other_results.items()):
+            with tab:
+                st.write(
+                    f"**Type:** {result['document_type']['ja_name']} ({result['document_type']['en_name']})")
 
-    with col2:
-        notes_2 = result_2.get("detailed_information", {}).get(
-            "additional_notes", "No notes")
-        st.info(f"**Document 2 Notes:**\n\n{notes_2}")
+                fields = result.get("detailed_information",
+                                    {}).get("fields", {})
+                if fields:
+                    col1, col2 = st.columns(2)
+                    fields_list = list(fields.items())
+                    mid_point = len(fields_list) // 2
 
-    # Discrepancy check results
+                    with col1:
+                        for field_name, field_value in fields_list[:mid_point]:
+                            st.text_input(
+                                label=field_name,
+                                value=str(field_value),
+                                disabled=True,
+                                key=f"other_{doc_class}_{field_name}"
+                            )
+                    with col2:
+                        for field_name, field_value in fields_list[mid_point:]:
+                            st.text_input(
+                                label=field_name,
+                                value=str(field_value),
+                                disabled=True,
+                                key=f"other_{doc_class}_{field_name}"
+                            )
+    else:
+        st.warning("⚠️ No other documents were successfully analyzed")
+
+    # ===== Discrepancy Check Results =====
     st.markdown("---")
-    st.subheader("🔍 Discrepancy Check Results")
+    st.subheader("🔍 Discrepancy Check Results (10 Key Items)")
 
-    # Check if comparison was performed
-    if st.session_state.comparison_result is None:
+    if st.session_state.discrepancy_check_result is None:
         st.warning(
-            "⚠️ Comparison has not been completed or encountered an error. Please check the logs above.")
+            "⚠️ Discrepancy check has not been completed or encountered an error. Please check the logs above.")
         return
 
-    comparison = st.session_state.comparison_result
+    check_result = st.session_state.discrepancy_check_result
 
-    # Matching items (green)
-    st.write("**✅ Matching Items (Green):**")
-    matching = comparison.get("matching_items", [])
-    if matching:
-        for item in matching:
-            col1, col2, col3 = st.columns(3)
+    # Display each check item
+    checks = check_result.get("checks", [])
+    if checks:
+        for check in checks:
+            item_num = check.get("item_number", 0)
+            item_name = check.get("item_name", "")
+            status = check.get("status", "")
+            severity = check.get("severity", "info")
+            lc_value = check.get("lc_value", "N/A")
+            other_value = check.get("other_value", "N/A")
+            discrepancy = check.get("discrepancy", "No discrepancy")
+
+            # Color-code based on status
+            if status == "OK":
+                st.success(f"✅ {item_num}. {item_name}")
+            elif status == "NG":
+                st.error(f"❌ {item_num}. {item_name}")
+            else:
+                st.warning(f"⚠️ {item_num}. {item_name}")
+
+            # Display details
+            col1, col2 = st.columns(2)
             with col1:
-                st.success(f"{item.get('field1')}: {item.get('value1')}")
+                st.caption(f"**L/C:** {lc_value}")
             with col2:
-                st.write("=")
-            with col3:
-                st.success(f"{item.get('field2')}: {item.get('value2')}")
-    else:
-        st.write("No matching items found")
+                st.caption(f"**Other Doc:** {other_value}")
 
-    st.write("")
+            if discrepancy != "No discrepancy":
+                st.caption(f"📌 {discrepancy}")
+            st.write("")
 
-    # Discrepant items (red)
-    st.write("**❌ Discrepant Items (Red):**")
-    discrepant = comparison.get("discrepant_items", [])
-    if discrepant:
-        for item in discrepant:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.error(f"{item.get('field1')}: {item.get('value1')}")
-            with col2:
-                st.write("≠")
-            with col3:
-                st.error(f"{item.get('field2')}: {item.get('value2')}")
-            st.caption(f"Reason: {item.get('reason', 'Unknown')}")
-    else:
-        st.write("No discrepant items found")
-
-    st.write("")
-
-    # Items unique to each document
-    st.write("**📋 Items Unique to Each Document:**")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        unique_1 = comparison.get("unique_to_doc1", [])
-        if unique_1:
-            st.write("**Unique to Document 1:**")
-            for item in unique_1:
-                st.warning(f"- {item.get('field')}: {item.get('value')}")
-        else:
-            st.write("No unique items")
-
-    with col2:
-        unique_2 = comparison.get("unique_to_doc2", [])
-        if unique_2:
-            st.write("**Unique to Document 2:**")
-            for item in unique_2:
-                st.warning(f"- {item.get('field')}: {item.get('value')}")
-        else:
-            st.write("No unique items")
-
-    # Summary
+    # Display critical issues
     st.markdown("---")
-    st.subheader("📌 Comparison Summary")
-    summary = comparison.get("summary", "No summary available")
-    st.info(summary)
+    st.subheader("⚠️ Critical Issues & Summary")
+
+    critical_issues = check_result.get("critical_issues", [])
+    if critical_issues:
+        st.error("**Critical Issues Found:**")
+        for issue in critical_issues:
+            st.write(f"- ❌ {issue}")
+    else:
+        st.success("**No critical issues found**")
+
+    # Display warnings
+    warnings = check_result.get("warnings", [])
+    if warnings:
+        st.warning("**Warnings:**")
+        for warning in warnings:
+            st.write(f"- ⚠️ {warning}")
+
+    # Display summary
+    summary = check_result.get("summary", "No summary available")
+    st.info(f"**Summary:** {summary}")
+
+    # Display recommendations
+    recommendations = check_result.get("recommendations", [])
+    if recommendations:
+        st.markdown("---")
+        st.subheader("💡 Recommendations")
+        for rec in recommendations:
+            st.write(f"- 📌 {rec}")
 
 
 def main():
     """Main application"""
-    st.title("📄 Trade Document Analysis & Comparison System")
+    st.title("📄 Trade Document Analysis & L/C Discrepancy Check System")
     st.markdown(
-        "#### Analyze and compare two trade documents using Azure Document Intelligence & AI")
+        "#### Analyze Letter of Credit and related documents for discrepancies using Azure AI")
 
     # Initialize analyzers
     initialize_analyzers()
 
     # Top section: File upload and controls
-    st.markdown("### Document Upload (2 Documents)")
+    st.markdown("### Document Upload")
 
     col1, col2 = st.columns(2)
 
+    # ===== LEFT: Letter of Credit (Single File) =====
     with col1:
-        st.write("**Document 1:**")
-        uploaded_file_1 = st.file_uploader(
-            "Upload first trade document (PDF)",
+        st.write("**Letter of Credit (L/C) - Single File:**")
+        uploaded_lc = st.file_uploader(
+            "Upload Letter of Credit (L/C) PDF only",
             type=["pdf"],
-            key="file_uploader_1"
+            key="file_uploader_lc"
         )
-        if uploaded_file_1 is not None:
-            st.session_state.uploaded_file_1 = uploaded_file_1
-            st.success(f"✅ Uploaded: {uploaded_file_1.name}")
+        if uploaded_lc is not None:
+            st.session_state.uploaded_lc = uploaded_lc
+            st.success(f"✅ Uploaded: {uploaded_lc.name}")
 
+    # ===== RIGHT: Other Documents (Multiple Files) =====
     with col2:
-        st.write("**Document 2:**")
-        uploaded_file_2 = st.file_uploader(
-            "Upload second trade document (PDF)",
+        st.write("**Other Documents - Multiple Files:**")
+        st.caption("(Invoice, Bill of Lading, Air Waybill, etc.)")
+        uploaded_others = st.file_uploader(
+            "Upload other trade documents (PDF)",
             type=["pdf"],
-            key="file_uploader_2"
+            accept_multiple_files=True,
+            key="file_uploader_others"
         )
-        if uploaded_file_2 is not None:
-            st.session_state.uploaded_file_2 = uploaded_file_2
-            st.success(f"✅ Uploaded: {uploaded_file_2.name}")
+        if uploaded_others:
+            st.session_state.uploaded_other_files = uploaded_others
+            for file in uploaded_others:
+                st.success(f"✅ Uploaded: {file.name}")
 
     # Action buttons
     st.markdown("---")
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        if st.button("🔍 Analyze & Compare", use_container_width=True):
+        if st.button("🔍 Analyze & Check Discrepancies", use_container_width=True):
             analyze_documents()
 
     with col2:
@@ -358,18 +407,23 @@ def main():
 
     # Display results
     st.markdown("---")
-    st.markdown("### Analysis & Comparison Results")
+    st.markdown("### Analysis & Discrepancy Check Results")
 
-    if st.session_state.analysis_result_1 is not None and st.session_state.analysis_result_2 is not None:
-        display_comparison_results()
+    if st.session_state.lc_analysis_result is not None:
+        display_discrepancy_results()
     else:
         st.info(
-            "📌 Upload two documents and click 'Analyze & Compare' to see results here")
+            "📌 Upload L/C file and other documents, then click 'Analyze & Check Discrepancies' to see results here")
 
     # Footer with supported document types
     with st.expander("ℹ️ Supported Document Types"):
         for doc_class, doc_info in DOCUMENT_TYPES.items():
-            st.markdown(f"**{doc_info['ja_name']}** ({doc_info['en_name']})")
+            if doc_class == "letter_of_credit":
+                st.markdown(
+                    f"**🔑 {doc_info['ja_name']}** ({doc_info['en_name']}) - Required as reference")
+            else:
+                st.markdown(
+                    f"**{doc_info['ja_name']}** ({doc_info['en_name']})")
             st.caption(
                 f"Extract fields: {', '.join(doc_info['extract_fields'][:3])}...")
 

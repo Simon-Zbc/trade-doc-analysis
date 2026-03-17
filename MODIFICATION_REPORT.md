@@ -363,6 +363,149 @@ azure-identity==1.14.0
 
 ---
 
+## 大規模アーキテクチャ変更 (2026年3月16-17日)
+
+### 📋 変更概要
+
+**従来:** 2つのファイルを並べて比較（左右対称の分析）
+**新規:** Letter of Credit (L/C) を基準として、複数の関連書類 (Invoice, B/L など) を検証する 10 項目のディスクレパンシーチェック
+
+### 🔧 Backend 修正 (src/gpt_analyzer.py)
+
+#### 新メソッド: `check_discrepancies_with_lc()`
+
+```python
+def check_discrepancies_with_lc(
+    self,
+    lc_analysis: Dict[str, Any],
+    other_files_analyses: Dict[str, Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    L/C を基準に 10 項目の詳細ディスクレパンシーチェックを実施
+    """
+```
+
+**実装された 10 項目チェック:**
+
+1. 船積日（Shipment Date Verification）
+2. L/C 有効期限（L/C Expiration Check）
+3. 呈示期限（Presentation Period Verification）
+4. 要求書類の不備（Required Documents Check）
+5. 建値（Price Terms Verification）
+6. 港湾（Ports Verification）
+7. 商品説明（Goods Description Check）
+8. 対外決済方法（Settlement Method Check）
+9. 手数料・条件（Fees and Conditions Check）
+10. ユーザンス期日（Usance Period Verification）
+
+#### API 呼び出しの最適化
+
+```python
+import time
+
+# 各 GPT 呼び出し前に 1 秒遅延を実装（計 4 箇所）
+- L/C 分類前：time.sleep(1)
+- L/C 抽出前：time.sleep(1)
+- 関連書類分析前：time.sleep(1)
+- ディスクレチェック前：time.sleep(1)
+```
+
+**目的:** API rate limiting の遵守と安定性向上
+
+### 🎨 Frontend 修正 (src/app.py)
+
+#### セッションステート完全書き替え
+
+```python
+# 変更前
+st.session_state.uploaded_file_1/2
+st.session_state.analysis_result_1/2
+st.session_state.comparison_result
+
+# 変更後
+st.session_state.uploaded_lc              # L/C ファイル（単一）
+st.session_state.uploaded_other_files     # 複数ファイル
+st.session_state.lc_analysis_result       # L/C 分析結果
+st.session_state.other_files_analysis_results  # 各ファイルの分析結果
+st.session_state.discrepancy_check_result # 10 項目チェック結果
+```
+
+#### UI レイアウト変更
+
+**前:**
+
+```
+┌─ 左側: ファイル1
+├─ 右側: ファイル2
+└─ 比較結果
+```
+
+**後:**
+
+```
+┌─ 左側: L/C（単一、必須）
+├─ 右側: 複数ファイル（複数、複数アップロード可）
+└─ L/C 検証 → 複数ファイル分析 → 10 項目チェック
+```
+
+#### 処理フロー書き直し（analyze_documents()）
+
+```python
+# 3 ステップフロー
+1. L/C ファイル分析・検証
+   └─ 非 L/C ファイルの場合、処理中断
+
+2. 複数ファイル順次分析
+   ├─ Invoice-分析
+   ├─ B/L-分析
+   └─ ...各ファイル順次処理
+
+3. 10 項目ディスクレチェック実行
+   └─ 結果表示（色分け: ✅ OK / ❌ NG / ⚠️ Warning）
+```
+
+### 📊 修正ファイル一覧
+
+| ファイル              | 修正内容                                     |
+| --------------------- | -------------------------------------------- |
+| `src/gpt_analyzer.py` | `check_discrepancies_with_lc()` メソッド追加 |
+| `src/app.py`          | 完全書き直し（L/C + 複数ファイルモデル対応） |
+| `src/config.py`       | 変更なし（既存）                             |
+| `UPDATE_NOTES.md`     | L/C システム説明を追加                       |
+
+### 🎯 主な改善点
+
+| 項目                 | 従来（2ファイル比較） | 新規（L/C ディスクレチェック） |
+| -------------------- | --------------------- | ------------------------------ |
+| **基準ドキュメント** | 同等レベル            | L/C 優先                       |
+| **ファイル数**       | 2 つ限定              | 複数（3～5推奨）               |
+| **チェック項目**     | フィールド比較        | 10 項目詳細検証                |
+| **表示形式**         | 左右対称              | L/C + タブ表示                 |
+| **エラー処理**       | 非区別                | L/C 検証失敗で処理中断         |
+| **色分け表示**       | 相違あり/なし         | ✅ OK / ❌ NG / ⚠️ Warning     |
+
+### ✅ テスト確認
+
+```bash
+# コンパイルテスト
+python -m py_compile src/gpt_analyzer.py src/app.py
+
+# インポートテスト
+python -c "from src.gpt_analyzer import GPTAnalyzer; from src.app import analyze_documents"
+
+# 実行テスト
+streamlit run src/app.py
+```
+
+### 📝 ドキュメント更新
+
+- ✅ `UPDATE_NOTES.md` - L/C システム完全説明
+- ✅ `README.md` - アーキテクチャ説明更新
+- ✅ `API.md` - `check_discrepancies_with_lc()` ドキュメント追加
+
+---
+
 **修正状態：** ✅ 完了
-**テスト状況：** ✅ 機能確認済み
+**テスト状況：** ✅ システム全体確認済み
 **ドキュメント：** ✅ 最新化完了
+**テストチェックリスト：** ✅ 全項目実施

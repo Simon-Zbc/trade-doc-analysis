@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import time
 from typing import Dict, Any
 from openai import OpenAI
 from config import (
@@ -125,8 +126,10 @@ JSON形式で以下の情報を返してください：
 }}
 """
 
+            logger.info("⏳ Waiting 1 second before GPT classification call...")
+            time.sleep(1)
             response = self._call_gpt(prompt)
-
+            # time.sleep(1)
             logger.debug(f"Classification response: {response}")
 
             # Parse response - handle potential markdown formatting
@@ -216,8 +219,10 @@ JSON形式で以下の構造で返してください：
 見つからない情報は、値を"N/A"として返してください。
 """
 
+            logger.info("⏳ Waiting 1 second before GPT extraction call...")
+            time.sleep(1)
             response = self._call_gpt(prompt)
-
+            # time.sleep(1)
             logger.debug(f"Extraction response: {response}")
 
             # Parse response - handle potential markdown formatting more robustly
@@ -280,7 +285,7 @@ JSON形式で以下の構造で返してください：
         """
         try:
             logger.info(f"💬 Calling GPT API with model: {self.model}")
-            logger.debug(f"Prompt length: {len(prompt)} characters")
+            logger.debug(f"Prompt: {prompt}")
 
             # Call Azure OpenAI using the SDK
             response = self.client.chat.completions.create(
@@ -294,8 +299,7 @@ JSON形式で以下の構造で返してください：
                         "role": "user",
                         "content": prompt
                     }
-                ],
-                max_completion_tokens=2000
+                ]
             )
 
             logger.info(f"✅ GPT API Response received")
@@ -401,8 +405,10 @@ JSON形式で以下の構造で返してください：
             logger.debug(f"Full prompt length: {len(prompt)} characters")
             logger.debug(f"Prompt content:\n{prompt[:500]}...")
 
+            logger.info("⏳ Waiting 1 second before GPT comparison call...")
+            time.sleep(1)
             response = self._call_gpt(prompt)
-
+            # time.sleep(1)
             logger.debug(f"Comparison response: {response}")
 
             # Parse response - handle potential markdown formatting more robustly
@@ -453,4 +459,158 @@ JSON形式で以下の構造で返してください：
             return {
                 "status": "error",
                 "error_message": f"Comparison failed: {str(e)}"
+            }
+
+    def check_discrepancies_with_lc(self, lc_analysis: Dict[str, Any], other_files_analyses: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Check discrepancies between Letter of Credit and other documents
+
+        Checks 10 key items:
+        1. 船積日 (Shipment Date) - Check with Bill of Lading
+        2. L/C有効期限 (L/C Validity)
+        3. 呈示期限 (Presentation Period) - Check with Bill of Lading
+        4. 要求書類の不備 (Required Documents) - Check Invoice, B/L document count
+        5. 建値 (Price Terms) - Invoice FOB/CFR vs B/L FREIGHT PREPAID/COLLECT
+        6. 船積地・荷揚地 (Ports)
+        7. 商品 (Goods) - Check with B/L and Invoice
+        8. 対外決済方法 (Settlement Method) vs SWIFT ADDRESS
+        9. 手数料負担区分 (Commission split), P/O, S/A, A/A requirements
+        10. ユーザンス期日 (Usance Period)
+
+        Args:
+            lc_analysis: Letter of Credit analysis result
+            other_files_analyses: Dictionary of other document analyses {doc_type: analysis}
+
+        Returns:
+            Dictionary containing discrepancy check results
+        """
+        try:
+            logger.info(
+                "🔍 Checking discrepancies with Letter of Credit as reference...")
+
+            # Extract L/C fields
+            lc_fields = lc_analysis.get(
+                "detailed_information", {}).get("fields", {})
+
+            # Extract other documents' fields
+            bl_analysis = other_files_analyses.get("bill_of_lading", {})
+            invoice_analysis = other_files_analyses.get("invoice", {})
+
+            bl_fields = bl_analysis.get(
+                "detailed_information", {}).get("fields", {})
+            invoice_fields = invoice_analysis.get(
+                "detailed_information", {}).get("fields", {})
+
+            # Prepare discrepancy check prompt with all relevant information
+            prompt = f"""以下の信用状(Letter of Credit)と関連する貿易書類（船荷証券、インボイス等）に基づいて、
+以下の10項目のディスクレパンシーチェックを行ってください。
+
+**信用状(L/C)の抽出結果:**
+```json
+{json.dumps(lc_fields, ensure_ascii=False, indent=2)}
+```
+
+**船荷証券(Bill of Lading)の抽出結果:**
+```json
+{json.dumps(bl_fields, ensure_ascii=False, indent=2)}
+```
+
+**インボイス(Invoice)の抽出結果:**
+```json
+{json.dumps(invoice_fields, ensure_ascii=False, indent=2)}
+```
+
+以下の10項目について詳細にチェックし、JSON形式で結果を返してください：
+
+1. **船積日チェック**: L/C船積期限 vs B/L船積日
+2. **L/C有効期限**: 有効期限内か確認
+3. **呈示期限チェック**: L/C呈示期間 vs B/L発行日
+4. **要求書類の不備**: 要求通数とInvoice、B/Lの通数確認
+5. **建値チェック**: Invoice(FOB/CFR) vs B/L(FREIGHT PREPAID/COLLECT)の対応
+6. **船積地・荷揚地**: L/C記載地と実際の一致確認
+7. **商品チェック**: L/C商品 vs B/L商品 vs Invoice商品の一致
+8. **決済方法**: L/C対外決済方法とSWIFTアドレス（仕向銀行・中継銀行）確認
+9. **手数料・条件**: 手数料負担区分、P/O、S/A、A/A要否確認
+10. **ユーザンス期日**: ユーザンス期日の確認
+
+以下のJSON形式で結果を返してください：
+
+{{
+    "checks": [
+        {{
+            "item_number": 1,
+            "item_name": "船積日チェック",
+            "status": "OK" または "NG" または "警告",
+            "lc_value": "L/C値",
+            "other_value": "他の書類の値",
+            "discrepancy": "相違内容",
+            "severity": "critical" または "warning" または "info"
+        }},
+        ...（全10項目）
+    ],
+    "summary": "全体的な評価と主要な問題点",
+    "critical_issues": ["重大な問題のリスト"],
+    "warnings": ["注意事項のリスト"],
+    "recommendations": ["推奨事項のリスト"]
+}}
+
+有効なJSON形式のみを返してください。マークダウンのコードブロックや説明は含めないでください。
+"""
+
+            # Log the prompt
+            logger.info("📝 Discrepancy check prompt prepared")
+            logger.debug(f"Prompt: {prompt}")
+
+            logger.info(
+                "⏳ Waiting 1 second before GPT discrepancy check call...")
+            time.sleep(1)
+            response = self._call_gpt(prompt)
+            # time.sleep(1)
+            logger.debug(f"Discrepancy check response: {response}")
+
+            # Parse response
+            response_text = response.strip()
+
+            # Remove markdown code blocks
+            if response_text.startswith('```json'):
+                response_text = response_text[7:].strip()
+            elif response_text.startswith('```'):
+                response_text = response_text[3:].strip()
+
+            if response_text.endswith('```'):
+                response_text = response_text[:-3].strip()
+
+            response_text = response_text.strip()
+
+            if not response_text:
+                logger.error(
+                    "Empty response from GPT API for discrepancy check")
+                return {
+                    "status": "error",
+                    "error_message": "No discrepancy check result received from GPT"
+                }
+
+            result = json.loads(response_text)
+            logger.info(f"✅ Discrepancy check completed")
+            logger.info(f"   Items checked: {len(result.get('checks', []))}")
+
+            return {
+                "status": "success",
+                "discrepancy_result": result
+            }
+
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Error parsing discrepancy check JSON: {str(e)}")
+            logger.debug(f"Failed to parse: {response_text[:500]}")
+            return {
+                "status": "error",
+                "error_message": f"Failed to parse discrepancy check result: {str(e)}"
+            }
+        except Exception as e:
+            logger.error(f"❌ Error checking discrepancies: {str(e)}")
+            logger.debug(
+                f"Exception details: {type(e).__name__}", exc_info=True)
+            return {
+                "status": "error",
+                "error_message": f"Discrepancy check failed: {str(e)}"
             }
